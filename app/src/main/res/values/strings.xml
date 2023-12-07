@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">My Radio</string>
+    <string name="play">Play</string>
+    <string name="playback_control">Playback control</string>
+    <string name="next">Next radio station</string>
+    <string name="previous">Previous radio station</string>
+    <string name="no_internet_connection">No internet connection</string>
+</resources>
