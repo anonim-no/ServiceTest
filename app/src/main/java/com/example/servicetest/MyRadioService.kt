@@ -1,16 +1,15 @@
 package com.example.servicetest
 
 import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.graphics.Bitmap
-import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.Uri
+import android.os.Build
 import android.os.IBinder
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
@@ -18,7 +17,6 @@ import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
-import androidx.core.app.TaskStackBuilder
 import androidx.media.session.MediaButtonReceiver
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
@@ -35,10 +33,14 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 @UnstableApi
 class MyRadioService : Service() {
 
+    private val NOTIFICATION_DEFAULT_CHANNEL_ID = "radio_channel"
+    private val NOTIFICATION_DEFAULT_CHANNEL_NAME = "Radio"
+
+
     private lateinit var player: ExoPlayer
     private lateinit var selectedRadio: Radio
     private lateinit var mediaSession: MediaSessionCompat
-
+    private var currentPlayBackState = PlaybackStateCompat.STATE_STOPPED
     private val stateBuilder = PlaybackStateCompat.Builder().setActions(
         PlaybackStateCompat.ACTION_PLAY
                 or PlaybackStateCompat.ACTION_STOP
@@ -48,31 +50,90 @@ class MyRadioService : Service() {
                 or PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
     )
 
-    private var currentPlayBackState = PlaybackStateCompat.STATE_STOPPED
+    private val metadataBuilder = MediaMetadataCompat.Builder()
 
-    private val broadcastReceiver: BroadcastReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            when (intent.action) {
-                AudioManager.ACTION_AUDIO_BECOMING_NOISY -> stop()
-            }
+    private val mediaSessionCallback = object : MediaSessionCompat.Callback() {
+        override fun onPlay() {
+            Log.i("RADIO", "onPlay()")
+        }
+
+        override fun onPause() {
+            Log.i("RADIO", "onPause()")
+        }
+
+        override fun onStop() {
+            Log.i("RADIO", "onStop()")
+        }
+
+        override fun onSkipToNext() {
+            Log.i("RADIO", "onSkipToNext()")
+        }
+
+        override fun onSkipToPrevious() {
+            Log.i("RADIO", "onSkipToPrevious()")
         }
     }
+
 
     override fun onBind(p0: Intent?): IBinder? {
         return null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+
         when (intent?.action) {
             Actions.START.toString() -> start()
             Actions.STOP.toString() -> stop()
+            else -> {
+                //Команды прилетают от системы
+                MediaButtonReceiver.handleIntent(mediaSession, intent)
+            }
         }
-        return super.onStartCommand(intent, flags, startId)
+
+        return START_REDELIVER_INTENT
     }
 
     override fun onCreate() {
         super.onCreate()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
+            val notificationChannel = NotificationChannel(
+                NOTIFICATION_DEFAULT_CHANNEL_ID,
+                NOTIFICATION_DEFAULT_CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_LOW
+            )
+
+            val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(notificationChannel)
+
+        }
+
+        //Создаем медиа сессию.
         mediaSession = MediaSessionCompat(this, "RadioService")
+        mediaSession.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS)
+        mediaSession.setCallback(mediaSessionCallback)
+
+        setMediaSessionMetadata("Радио хуядио!", "Пошел на хуй!")
+
+        //Настраиваем какую активити открывать при клике на уведомление
+        val activityIntent = Intent(applicationContext, MainActivity::class.java)
+        activityIntent.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP//Флаги, чтобы не создавать новую активити?
+        mediaSession.setSessionActivity(PendingIntent.getActivity(applicationContext, 0, activityIntent, PendingIntent.FLAG_IMMUTABLE))
+
+        //Создаем "приниматель" нажатий на медиакнопки в уведомлениях и т.д... системная залупа какая-то. Чтобы обрабатывать медиа
+        val mediaButtonIntent = Intent(Intent.ACTION_MEDIA_BUTTON, null, applicationContext, MediaButtonReceiver::class.java)
+        mediaSession.setMediaButtonReceiver(PendingIntent.getBroadcast(applicationContext, 0, mediaButtonIntent, PendingIntent.FLAG_IMMUTABLE))
+    }
+
+
+    private fun setMediaSessionMetadata(radioName: String, trackName: String) {
+        mediaSession.setMetadata(
+            metadataBuilder
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, radioName)
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, trackName)
+                .build()
+        )
     }
 
     private fun stop() {
@@ -80,13 +141,13 @@ class MyRadioService : Service() {
         stopSelf()
     }
 
-
     private fun getNotification(playbackState: Int): Notification {
         val builder: NotificationCompat.Builder = MediaStyleHelper.from(
             this,
             mediaSession,
             MY_RADIO_CHANNEL_ID
         )
+
         if (playbackState == PlaybackStateCompat.STATE_PLAYING) {
             builder.addAction(
                 NotificationCompat.Action(
@@ -140,11 +201,11 @@ class MyRadioService : Service() {
         ) // setMediaSession требуется для Android Wear
 
         builder.setDeleteIntent(getStopServiceIntent())
-
         builder.setSmallIcon(R.drawable.ic_radio)
         builder.setShowWhen(false)
         builder.priority = NotificationCompat.PRIORITY_HIGH
         builder.setChannelId(MY_RADIO_CHANNEL_ID)
+
         return builder.build()
     }
 
@@ -162,13 +223,9 @@ class MyRadioService : Service() {
 
     private fun start() {
 
-
-
-        val notification = getNotification(currentPlayBackState)
+        val notification = getNotification(PlaybackStateCompat.STATE_PLAYING)
 
         startForeground(1, notification)
-
-
 
         player = ExoPlayer
             .Builder(this)
@@ -232,7 +289,6 @@ class MyRadioService : Service() {
 
         play(selectedRadio)
 
-        registerReceiver(broadcastReceiver, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY))
     }
 
     private fun selectRadio(radio: Radio) {
@@ -255,9 +311,18 @@ class MyRadioService : Service() {
 
             toast("Playing ${selectedRadio.name}")
 
+            mediaSession.setPlaybackState(
+                stateBuilder.setState(PlaybackStateCompat.STATE_PLAYING, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 1f).build()
+            )
+
         } else {
             toast(getString(R.string.no_internet_connection))
         }
+
+
+        // Указываем, что наше приложение теперь активный плеер и кнопки
+        // на окне блокировки должны управлять именно нами
+        mediaSession.isActive = true
     }
 
     private fun toast(text: String) {
@@ -350,32 +415,7 @@ class MyRadioService : Service() {
         ),
     )
 
-
-    val mediaSessionCallback = object:MediaSessionCompat.Callback() {
-        override fun onPlay() {
-            play(selectedRadio)
-        }
-
-        override fun onPause() {
-            Log.i("RADIO","onPause()")
-        }
-
-        override fun onStop() {
-            Log.i("RADIO","onStop()")
-        }
-
-        override fun onSkipToNext() {
-            Log.i("RADIO","onSkipToNext()")
-        }
-
-        override fun onSkipToPrevious() {
-            Log.i("RADIO","onSkipToPrevious()")
-        }
-    }
-
 }
-
-
 
 object MediaStyleHelper {
     /**
@@ -392,7 +432,7 @@ object MediaStyleHelper {
         channelId: String?,
     ): NotificationCompat.Builder {
         val controller = mediaSession.controller
-        //val mediaMetadata = controller.metadata
+        val mediaMetadata = controller.metadata
         //val description = mediaMetadata.description
         val builder = NotificationCompat.Builder(
             context!!, channelId!!
@@ -402,7 +442,8 @@ object MediaStyleHelper {
             .setContentText("description.subtitle")
             .setSubText("description.description")
             //.setLargeIcon(description.iconBitmap)
-            .setContentIntent(controller.sessionActivity) //.setDeleteIntent(MediaButtonReceiver.buildMediaButtonPendingIntent(context, PlaybackStateCompat.ACTION_STOP))
+            .setContentIntent(controller.sessionActivity) //
+            .setDeleteIntent(MediaButtonReceiver.buildMediaButtonPendingIntent(context, PlaybackStateCompat.ACTION_STOP))
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         return builder
     }
